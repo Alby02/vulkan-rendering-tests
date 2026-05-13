@@ -8,6 +8,42 @@
 #include <set>
 #include <algorithm>
 #include <fstream>
+#include <array>
+#include <chrono>
+#include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
+
+struct Vertex {
+    glm::vec2 pos;
+    glm::vec3 color;
+
+    // These two helpers tell Vulkan exactly how big this struct is and where the variables are inside it
+    static VkVertexInputBindingDescription getBindingDescription() {
+        VkVertexInputBindingDescription bindingDescription{};
+        bindingDescription.binding = 0;
+        bindingDescription.stride = sizeof(Vertex);
+        bindingDescription.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+        return bindingDescription;
+    }
+
+    static std::array<VkVertexInputAttributeDescription, 2> getAttributeDescriptions() {
+        std::array<VkVertexInputAttributeDescription, 2> attributeDescriptions{};
+
+        // Position attribute (matches 'float2 position : POSITION' in Slang)
+        attributeDescriptions[0].binding = 0;
+        attributeDescriptions[0].location = 0; // Location 0
+        attributeDescriptions[0].format = VK_FORMAT_R32G32_SFLOAT; // float2
+        attributeDescriptions[0].offset = offsetof(Vertex, pos);
+
+        // Color attribute (matches 'float3 color : COLOR' in Slang)
+        attributeDescriptions[1].binding = 0;
+        attributeDescriptions[1].location = 1; // Location 1
+        attributeDescriptions[1].format = VK_FORMAT_R32G32B32_SFLOAT; // float3
+        attributeDescriptions[1].offset = offsetof(Vertex, color);
+
+        return attributeDescriptions;
+    }
+};
 
 struct QueueFamilyIndices {
     std::optional<uint32_t> graphicsFamily;
@@ -66,6 +102,9 @@ private:
     std::vector<VkSemaphore> renderFinishedSemaphores;
     std::vector<VkFence> inFlightFences;
 
+    VkBuffer vertexBuffer{VK_NULL_HANDLE};
+    VkDeviceMemory vertexBufferMemory{VK_NULL_HANDLE};
+
     uint32_t currentFrame = 0;
 
     // Configuration
@@ -81,6 +120,12 @@ private:
     const std::vector<const char*> deviceExtensions = {
         VK_KHR_SWAPCHAIN_EXTENSION_NAME,
         VK_KHR_SHADER_DRAW_PARAMETERS_EXTENSION_NAME
+    };
+
+    const std::vector<Vertex> vertices = {
+        {{0.0f, -0.5f}, {1.0f, 0.0f, 0.0f}}, // Top (Red)
+        {{0.5f, 0.5f}, {0.0f, 1.0f, 0.0f}},  // Bottom Right (Green)
+        {{-0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}}  // Bottom Left (Blue)
     };
 
     // Toggle validation layers based on debug/release builds
@@ -104,6 +149,7 @@ private:
     void createCommandPool();
     void createCommandBuffer();
     void createSyncObjects();
+    void createVertexBuffer();
     void mainLoop();
     void drawFrame();
     void recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex);
@@ -114,6 +160,8 @@ private:
     std::vector<const char*> getRequiredExtensions();
     bool isDeviceSuitable(VkPhysicalDevice device);
     QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device);
+
+    uint32_t findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties);
 
     bool checkDeviceExtensionSupport(VkPhysicalDevice device);
     SwapChainSupportDetails querySwapChainSupport(VkPhysicalDevice device);

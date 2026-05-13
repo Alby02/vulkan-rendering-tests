@@ -14,6 +14,7 @@ VulkanEngine::VulkanEngine() {
     createRenderPass();
     createGraphicsPipeline();
     createFramebuffers();
+    createVertexBuffer();
     createCommandPool();
     createCommandBuffer();
     createSyncObjects();
@@ -142,6 +143,8 @@ void VulkanEngine::mainLoop() {
 }
 
 void VulkanEngine::cleanup() {
+    vkDestroyBuffer(device, vertexBuffer, nullptr);
+    vkFreeMemory(device, vertexBufferMemory, nullptr);
     // Loop through and destroy all sync objects
     for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
         vkDestroySemaphore(device, renderFinishedSemaphores[i], nullptr);
@@ -566,11 +569,15 @@ void VulkanEngine::createGraphicsPipeline() {
     dynamicState.pDynamicStates = dynamicStates.data();
 
     // --- Vertex Input ---
-    // Because our triangle coordinates are hardcoded in the Slang shader, this is empty!
+    auto bindingDescription = Vertex::getBindingDescription();
+    auto attributeDescriptions = Vertex::getAttributeDescriptions();
+
     VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
     vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-    vertexInputInfo.vertexBindingDescriptionCount = 0;
-    vertexInputInfo.vertexAttributeDescriptionCount = 0;
+    vertexInputInfo.vertexBindingDescriptionCount = 1;
+    vertexInputInfo.pVertexBindingDescriptions = &bindingDescription;
+    vertexInputInfo.vertexAttributeDescriptionCount = static_cast<uint32_t>(attributeDescriptions.size());
+    vertexInputInfo.pVertexAttributeDescriptions = attributeDescriptions.data();
 
     // --- Input Assembly ---
     // Tells Vulkan we are drawing triangles, not lines or points
@@ -593,7 +600,7 @@ void VulkanEngine::createGraphicsPipeline() {
     rasterizer.polygonMode = VK_POLYGON_MODE_FILL; // You can change this to VK_POLYGON_MODE_LINE for wireframe later!
     rasterizer.lineWidth = 1.0f;
     rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
-    rasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE;
+    rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
     rasterizer.depthBiasEnable = VK_FALSE;
 
     // --- Multisampling ---
@@ -616,11 +623,18 @@ void VulkanEngine::createGraphicsPipeline() {
     colorBlending.pAttachments = &colorBlendAttachment;
 
     // --- Pipeline Layout ---
-    // Empty for now, but necessary.
+    VkPushConstantRange pushConstantRange{};
+    pushConstantRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+    pushConstantRange.offset = 0;
+    pushConstantRange.size = sizeof(glm::mat4); // The size of our 4x4 matrix
+
     VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
     pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     pipelineLayoutInfo.setLayoutCount = 0;
-    pipelineLayoutInfo.pushConstantRangeCount = 0;
+    
+    // Tell the layout about our push constant
+    pipelineLayoutInfo.pushConstantRangeCount = 1;
+    pipelineLayoutInfo.pPushConstantRanges = &pushConstantRange;
 
     if (vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr, &pipelineLayout) != VK_SUCCESS) {
         throw std::runtime_error("Failed to create pipeline layout!");
@@ -823,6 +837,35 @@ void VulkanEngine::recordCommandBuffer(VkCommandBuffer cmdBuffer, uint32_t image
     scissor.extent = swapchainExtent;
     vkCmdSetScissor(cmdBuffer, 0, 1, &scissor);
 
+    VkBuffer vertexBuffers[] = {vertexBuffer};
+    VkDeviceSize offsets[] = {0};
+    vkCmdBindVertexBuffers(cmdBuffer, 0, 1, vertexBuffers, offsets);
+
+    // 4.1. Calculate time for smooth rotation
+    static auto startTime = std::chrono::high_resolution_clock::now();
+    auto currentTime = std::chrono::high_resolution_clock::now();
+    float time = std::chrono::duration<float, std::chrono::seconds::period>(currentTime - startTime).count();
+
+    // 4.2. Build the Model-View-Projection Matrices
+    // Model: Spin the triangle around the Z-axis (90 degrees per second)
+    glm::mat4 model = glm::rotate(glm::mat4(1.0f), time * glm::radians(90.0f), glm::vec3(0.0f, 0.0f, 1.0f));
+    
+    // View: Pull the camera back 2 units in the Z direction
+    glm::mat4 view = glm::lookAt(glm::vec3(0.0f, 0.0f, 2.0f), glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+    
+    // Projection: Create a 3D perspective with a 45-degree field of view
+    glm::mat4 proj = glm::perspective(glm::radians(45.0f), swapchainExtent.width / (float)swapchainExtent.height, 0.1f, 10.0f);
+    
+    // VULKAN GOTCHA: GLM was designed for OpenGL, where the Y coordinate goes UP. 
+    // In Vulkan, the Y coordinate goes DOWN. We must flip the Y scale matrix!
+    proj[1][1] *= -1;
+
+    // Multiply them all together (Order matters: Proj * View * Model)
+    glm::mat4 mvp = proj * view * model;
+
+    // 4.3. Push the data to the GPU!
+    vkCmdPushConstants(cmdBuffer, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(glm::mat4), &mvp);
+
     // 4. THE MAGIC WORD: Draw 3 vertices, 1 instance, starting at vertex 0
     vkCmdDraw(cmdBuffer, 3, 1, 0, 0);
 
@@ -885,3 +928,50 @@ void VulkanEngine::drawFrame() {
     currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
 }
 
+uint32_t VulkanEngine::findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties) {
+    // Query the GPU to see what kinds of memory banks it has available
+    VkPhysicalDeviceMemoryProperties memProperties;
+    vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memProperties);
+
+    for (uint32_t i = 0; i < memProperties.memoryTypeCount; i++) {
+        if ((typeFilter & (1 << i)) && (memProperties.memoryTypes[i].propertyFlags & properties) == properties) {
+            return i;
+        }
+    }
+    throw std::runtime_error("Failed to find suitable memory type!");
+}
+
+void VulkanEngine::createVertexBuffer() {
+    VkBufferCreateInfo bufferInfo{};
+    bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bufferInfo.size = sizeof(vertices[0]) * vertices.size(); // The size of our C++ array in bytes
+    bufferInfo.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;    // We are going to use this as a vertex buffer
+    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    if (vkCreateBuffer(device, &bufferInfo, nullptr, &vertexBuffer) != VK_SUCCESS) {
+        throw std::runtime_error("Failed to create vertex buffer!");
+    }
+
+    // Now we must allocate memory for it
+    VkMemoryRequirements memRequirements;
+    vkGetBufferMemoryRequirements(device, vertexBuffer, &memRequirements);
+
+    VkMemoryAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocInfo.allocationSize = memRequirements.size;
+    // We want memory that is visible to the CPU (so we can write to it) and Coherent (so it updates instantly)
+    allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+    if (vkAllocateMemory(device, &allocInfo, nullptr, &vertexBufferMemory) != VK_SUCCESS) {
+        throw std::runtime_error("Failed to allocate vertex buffer memory!");
+    }
+
+    // Bind the allocated memory to the buffer
+    vkBindBufferMemory(device, vertexBuffer, vertexBufferMemory, 0);
+
+    // Finally, copy our C++ vector data into the GPU memory
+    void* data;
+    vkMapMemory(device, vertexBufferMemory, 0, bufferInfo.size, 0, &data);
+    memcpy(data, vertices.data(), (size_t) bufferInfo.size);
+    vkUnmapMemory(device, vertexBufferMemory);
+}

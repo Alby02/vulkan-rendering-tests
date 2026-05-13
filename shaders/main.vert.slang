@@ -1,29 +1,27 @@
+// This matches the C++ struct we are about to create!
+struct VertexInput {
+    float2 position : POSITION;
+    float3 color    : COLOR;
+};
+
 struct VertexOutput {
-    // SV_Position tells the GPU this is the final screen coordinate
     float4 position : SV_Position;
     float3 color;
 };
 
+struct PushConstants {
+    float4x4 mvp; // Model-View-Projection Matrix
+};
+[[vk::push_constant]] PushConstants pushConstants;
+
 [shader("vertex")]
-VertexOutput vertexMain(uint vertexID : SV_VertexID) {
+VertexOutput vertexMain(VertexInput input) {
     VertexOutput output;
-    
-    // Hardcoded triangle corners (X, Y)
-    float2 positions[3] = {
-        float2(0.0, -0.5), // Top center
-        float2(0.5, 0.5),  // Bottom right
-        float2(-0.5, 0.5)  // Bottom left
-    };
-    
-    // Hardcoded colors (Red, Green, Blue)
-    float3 colors[3] = {
-        float3(1.0, 0.0, 0.0),
-        float3(0.0, 1.0, 0.0),
-        float3(0.0, 0.0, 1.0)
-    };
-    
-    output.position = float4(positions[vertexID], 0.0, 1.0);
-    output.color = colors[vertexID];
-    
+
+    // We multiply our 3D matrix by our position to move it into 3D space
+    float4 worldPosition = float4(input.position, 0.0, 1.0);
+    output.position = mul(pushConstants.mvp, worldPosition);
+
+    output.color = input.color;
     return output;
 }
