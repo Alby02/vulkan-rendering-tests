@@ -11,31 +11,38 @@ project('vulkan_engine', 'cpp',
 # Meson natively finds Vulkan via pkg-config or VULKAN_SDK environment variable
 vulkan_dep = dependency('vulkan')
 
-# Try standard dependency resolution first (pkg-config, CMake)
+# Dependencies via system / pkg-config / built-in CMake
 sdl3_dep = dependency('sdl3', required: false)
 glm_dep = dependency('glm', required: false)
 
 cpp = meson.get_compiler('cpp')
 
-# Fallback for Windows MSVC: LunarG SDK often bundles SDL3 and GLM
-if cpp.get_id() == 'msvc' and (not sdl3_dep.found() or not glm_dep.found())
+# --- Fallback: Local vcpkg manifest ---
+# If standard lookup fails, see if vcpkg_installed exists locally in the project
+if not sdl3_dep.found() or not glm_dep.found()
+  vcpkg_path = meson.project_source_root() / 'vcpkg_installed' / 'x64-windows'
+  vcpkg_inc = include_directories('vcpkg_installed/x64-windows/include')
   
-  # Retrieve the VULKAN_SDK environment variable via Python (which Meson guarantees is present)
-  python = find_program('python', 'python3')
-  vulkan_sdk_path = run_command(python, '-c', 'import os; print(os.environ.get("VULKAN_SDK", ""))', check: false).stdout().strip()
-  
-  if vulkan_sdk_path != ''
-    if not sdl3_dep.found()
-      sdl3_lib = cpp.find_library('SDL3', dirs: vulkan_sdk_path / 'Lib', required: true)
-      sdl3_dep = declare_dependency(include_directories: vulkan_sdk_path / 'Include', dependencies: sdl3_lib)
+  if not sdl3_dep.found()
+    sdl3_lib = cpp.find_library('SDL3', dirs: vcpkg_path / 'lib', required: false)
+    if sdl3_lib.found()
+      sdl3_dep = declare_dependency(include_directories: vcpkg_inc, dependencies: sdl3_lib)
     endif
-    if not glm_dep.found()
-      glm_dep = declare_dependency(include_directories: vulkan_sdk_path / 'Include')
+  endif
+  
+  if not glm_dep.found()
+    # GLM is often header-only but vcpkg generates a lib for proper linking integration
+    glm_lib = cpp.find_library('glm', dirs: vcpkg_path / 'lib', required: false)
+    if glm_lib.found()
+      glm_dep = declare_dependency(include_directories: vcpkg_inc, dependencies: glm_lib)
+    else
+      # If header-only fallback
+      glm_dep = declare_dependency(include_directories: vcpkg_inc)
     endif
   endif
 endif
 
-# If still missing, trigger typical dependency() to fail with a proper native error
+# Fail explicitly if dependencies are still nowhere to be found
 if not sdl3_dep.found()
   sdl3_dep = dependency('sdl3')
 endif
